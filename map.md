@@ -93,6 +93,8 @@ zephyr/
 `-- zephyr-workbench/     # 本地工作台与导读资料
     |-- map.md            # 顶层源码路由图
     |-- script/           # 脚本说明与补充文档
+    |-- template/         # 可直接复用的命令模板
+    |   `-- west-template.md # 手工 west / twister 构建与测试命令手册
     `-- topics/           # 专题化知识沉淀
         `-- cmake-build-flow.md # CMake 构建主线与 hello_world 到 zephyr.elf 调用链
 ```
@@ -116,6 +118,7 @@ zephyr/
 - `Kconfig.zephyr`：配置汇聚入口，直接引入 `dts/Kconfig`、`modules/Kconfig`、`boards/Kconfig`、`soc/Kconfig`、`arch/Kconfig`、`kernel/Kconfig`、`drivers/Kconfig`、`lib/Kconfig`、`subsys/Kconfig` 等。
 - `VERSION`、`SDK_VERSION`、`version.h.in`：版本和版本头模板入口。
 - `topics/cmake-build-flow.md`：已验证的专题文件，收敛了 `find_package(Zephyr)` 到 `zephyr.elf` 的主链。
+- `topics/cmake-directory-map.md`：已验证的专题文件，收敛了 `zephyr/cmake/` 目录的结构、职责分层和关键入口。
 
 适合先看这里的问题：
 
@@ -123,6 +126,7 @@ zephyr/
 - 应用如何把 Zephyr 作为基座纳入 CMake 构建。
 - west 会拉取或声明哪些外部项目。
 - 构建输出、链接阶段、生成头文件等问题：先看 `topics/cmake-build-flow.md`，再进入根 `CMakeLists.txt` 和 build 目录。
+- 想知道 `zephyr/cmake/` 目录本身如何分层、各子目录分别负责什么：先看 `topics/cmake-directory-map.md`。
 
 待补充：
 

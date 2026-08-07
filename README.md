@@ -10,6 +10,7 @@
 - `topics/`：某个稳定主题目前已经确认了什么。
 - `tasks/`：当前要解决什么、边界是什么、怎样算完成。
 - `decisions.md`：为什么选择了某个跨任务或跨模块方案。
+- `template/`：可直接复用的命令模板与操作手册。
 
 同一信息只保留一个正式位置，不再为人和 AI 维护两份内容。
 
@@ -20,6 +21,8 @@ zephyr-workbench/
 ├── README.md
 ├── map.md
 ├── decisions.md
+├── template/
+│   └── west-template.md      # 手工 west / twister 构建与测试命令模板
 ├── topics/                 # 出现第一个真实专题时再创建
 │   └── <topic>.md
 └── tasks/
@@ -35,7 +38,8 @@ Zephyr 仓库根目录的 `AGENTS.md` 是 AI 协作的唯一规则入口。
 1. 先读对应任务文件。
 2. 需要定位源码时查 `map.md`。
 3. 有相关专题时再读对应 `topics/<topic>.md`。
-4. 进入源码和测试验证，不以工作台文档代替事实。
+4. 需要直接执行命令时查 `template/west-template.md`。
+5. 进入源码和测试验证，不以工作台文档代替事实。
 
 ### 没有任务文件
 
