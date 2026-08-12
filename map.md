@@ -1,9 +1,9 @@
 ---
 title: Zephyr Source Map
 status: draft
-last_verified: 2026-08-07
+last_verified: 2026-08-11
 source_revision: e25bf15ef4e
-verification_scope: 顶层入口文件和主要目录的一层结构；补充应用入口到 Zephyr 基座 CMake 的主链
+verification_scope: 顶层入口文件和主要目录的一层结构；应用入口、源码选择到最终 ELF 的构建路由
 ---
 
 # Zephyr Source Map
@@ -96,7 +96,7 @@ zephyr/
     |-- template/         # 可直接复用的命令模板
     |   `-- west-template.md # 手工 west / twister 构建与测试命令手册
     `-- topics/           # 专题化知识沉淀
-        `-- cmake-build-flow.md # CMake 构建主线与 hello_world 到 zephyr.elf 调用链
+        `-- cmake-build-flow.md # CMake 主线、源码选择与 hello_world 到 zephyr.elf 调用链
 ```
 
 阅读建议：
@@ -117,7 +117,7 @@ zephyr/
 - `Kconfig`：配置主入口，声明 `mainmenu "Zephyr Kernel Configuration"` 并引入 `Kconfig.zephyr`。
 - `Kconfig.zephyr`：配置汇聚入口，直接引入 `dts/Kconfig`、`modules/Kconfig`、`boards/Kconfig`、`soc/Kconfig`、`arch/Kconfig`、`kernel/Kconfig`、`drivers/Kconfig`、`lib/Kconfig`、`subsys/Kconfig` 等。
 - `VERSION`、`SDK_VERSION`、`version.h.in`：版本和版本头模板入口。
-- `topics/cmake-build-flow.md`：已验证的专题文件，收敛了 `find_package(Zephyr)` 到 `zephyr.elf` 的主链。
+- `topics/cmake-build-flow.md`：已验证的专题文件，收敛了 `find_package(Zephyr)` 到 `zephyr.elf` 的主链，以及 Kconfig/CMake 如何选择源码、怎样从构建产物反查。
 - `topics/cmake-directory-map.md`：已验证的专题文件，收敛了 `zephyr/cmake/` 目录的结构、职责分层和关键入口。
 
 适合先看这里的问题：
@@ -126,6 +126,7 @@ zephyr/
 - 应用如何把 Zephyr 作为基座纳入 CMake 构建。
 - west 会拉取或声明哪些外部项目。
 - 构建输出、链接阶段、生成头文件等问题：先看 `topics/cmake-build-flow.md`，再进入根 `CMakeLists.txt` 和 build 目录。
+- 某个源文件为什么参与编译、是否进入静态库或最终 ELF：先看 `topics/cmake-build-flow.md` 的源码选择和构建反查章节。
 - 想知道 `zephyr/cmake/` 目录本身如何分层、各子目录分别负责什么：先看 `topics/cmake-directory-map.md`。
 
 待补充：

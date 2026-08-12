@@ -1,17 +1,18 @@
 ---
 title: Zephyr CMake Build Flow
 status: verified
-last_verified: 2026-08-07
+last_verified: 2026-08-11
 source_revision: e25bf15ef4e
-verification_scope: 应用入口到 Zephyr 基座 CMake、目录接入、自动生成文件、多阶段链接与最终产物
+verification_scope: 应用入口到 Zephyr 基座 CMake、配置与源文件选择、目录接入、自动生成文件、多阶段链接与最终产物
 ---
 
 # Zephyr CMake Build Flow
 
-本文档回答两个问题：
+本文档回答三个问题：
 
 - `find_package(Zephyr)` 之后，CMake 是如何把一个应用组织成完整内核镜像的。
 - 以 `samples/hello_world` 为例，从应用入口到 `zephyr.elf` 的调用链是怎样串起来的。
+- 内核、驱动和子系统的源文件如何被选中，以及怎样确认它们是否真的进入最终镜像。
 
 本文只覆盖已通过源码确认的主链；具体驱动、具体子系统和具体板级细节，需要再进入各自目录继续展开。
 
@@ -308,6 +309,271 @@ samples/hello_world/CMakeLists.txt
 
 当 Twister 触发该 sample 构建时，底层仍然会走同一套 `find_package(Zephyr)` 到 `zephyr.elf` 的 CMake 主链。
 
+## 源文件如何被选中并进入最终镜像
+
+内核、库、驱动和子系统基本遵循同一套选择流程：
+
+```text
+board target / DTS / defconfig / prj.conf / overlay / snippet
+  -> Kconfig 计算最终 CONFIG_*
+  -> build/zephyr/.config
+  -> CMake 导入 CONFIG_* 变量
+  -> 顶层 CMake 进入源码域或类别目录
+  -> 子目录 CMake 选择具体源文件
+  -> 编译器处理源文件内部的 #if 和 Devicetree 宏
+  -> 对象文件进入 Zephyr 库或普通静态库
+  -> 链接器按符号引用提取对象并执行 section garbage collection
+  -> zephyr.elf
+```
+
+这条链上有四层不同含义，排查时不能混为一谈：
+
+1. 进入目录不表示目录中所有源文件都会编译。
+2. 源文件参与编译不表示文件中所有条件代码都会保留。
+3. 对象文件进入静态库不表示它一定被最终链接提取。
+4. 对象文件被提取也不表示它的每个 section 都会保留。
+
+### 1. Kconfig 先形成最终配置
+
+`Kconfig.zephyr` 汇聚 board、SoC、arch、kernel、drivers、lib 和 subsys 等配置入口。构建时，board 默认配置、应用 `prj.conf`、额外配置片段及 Kconfig 依赖共同计算出：
+
+```text
+<build-dir>/zephyr/.config
+```
+
+`cmake/modules/kconfig.cmake` 随后通过 `import_kconfig()` 把 `.config` 中的 `CONFIG_*` 导入 CMake。于是下面这样的判断才能在 CMake 配置阶段成立：
+
+```cmake
+if(CONFIG_MULTITHREADING)
+  # ...
+endif()
+```
+
+因此，分析“为什么编译了某文件”时，应该先确认最终 `.config`，而不是只看应用的 `prj.conf`。`prj.conf` 是输入之一，`.config` 才是 Kconfig 计算后的结果。
+
+### 2. 顶层 CMake 接入源码域
+
+Zephyr 根 `CMakeLists.txt` 会进入这些主要源码域：
+
+```cmake
+add_subdirectory(arch)
+add_subdirectory(lib)
+add_subdirectory(soc)
+add_subdirectory(subsys)
+add_subdirectory(drivers)
+add_subdirectory(kernel)
+```
+
+这里的 `add_subdirectory()` 只表示把该目录的构建规则纳入处理。真正的文件选择通常还在各目录自己的 `CMakeLists.txt` 中继续完成。
+
+### 3. 内核文件选择
+
+`kernel/CMakeLists.txt` 同时使用无条件源文件、条件源文件和条件子目录。例如：
+
+```cmake
+kernel_sources(
+  main_weak.c
+  busy_wait.c
+  device.c
+  fatal.c
+  init.c
+  # ...
+)
+
+kernel_sources_ifdef(CONFIG_MULTITHREADING
+  idle.c
+  mutex.c
+  sem.c
+  thread.c
+  sched.c
+  scheduler.c
+  # ...
+)
+
+kernel_sources_ifdef(CONFIG_TIMESLICING timeslicing.c)
+target_sources_ifdef(CONFIG_SYS_CLOCK_EXISTS kernel PRIVATE timeout.c timer.c)
+add_subdirectory_ifdef(CONFIG_USERSPACE userspace)
+```
+
+选择过程可以概括为：
+
+```text
+Kconfig.zephyr
+  -> kernel/Kconfig
+  -> 最终 CONFIG_MULTITHREADING、CONFIG_TIMESLICING 等
+  -> kernel/CMakeLists.txt
+  -> kernel_sources* / target_sources* / add_subdirectory*
+  -> kernel/libkernel.a
+  -> zephyr.elf
+```
+
+部分共享源文件会无条件编译，再由文件内部的 `#if defined(CONFIG_...)` 选择实现分支。例如某种调度策略不一定对应独立的 `.c` 文件，也可能是同一源文件中的编译期分支。
+
+### 4. 驱动文件选择
+
+驱动遵循相同主线，但比内核多一层 Devicetree 输入。以当前 QEMU Cortex-M3 构建中的 Stellaris UART 为例：
+
+```text
+qemu_cortex_m3/ti_lm3s6965
+  -> board/SoC DTS 启用 UART 节点
+  -> Kconfig 最终得到 CONFIG_SERIAL=y 和 CONFIG_UART_STELLARIS=y
+  -> drivers/CMakeLists.txt 进入 serial/
+  -> drivers/serial/CMakeLists.txt 选择 uart_stellaris.c
+  -> libdrivers__serial.a
+  -> zephyr.elf
+```
+
+类别目录由 `drivers/CMakeLists.txt` 选择：
+
+```cmake
+add_subdirectory_ifdef(CONFIG_SERIAL serial)
+```
+
+具体实现再由 `drivers/serial/CMakeLists.txt` 选择：
+
+```cmake
+zephyr_library_sources_ifdef(CONFIG_UART_STELLARIS uart_stellaris.c)
+```
+
+Devicetree 通常不直接把任意 `.c` 文件交给编译器。它提供启用状态、`compatible`、寄存器、中断等硬件信息，并生成 `DT_HAS_*_ENABLED` 和设备实例相关信息；这些信息会参与 Kconfig 选择，并由驱动源码中的 `DEVICE_DT_DEFINE`、`DT_INST_*` 等宏完成实例化。
+
+因此，驱动问题通常需要同时检查：
+
+- board 和 SoC 的 DTS/DTSI、overlay
+- 对应 Devicetree binding
+- 最终 `.config`
+- `drivers/<type>/Kconfig*`
+- `drivers/<type>/CMakeLists.txt`
+- 驱动源码中的 DT 实例宏
+
+### 5. 子系统和库文件选择
+
+子系统也是同一模式。例如 `subsys/CMakeLists.txt` 对较大的功能域直接做条件选择：
+
+```cmake
+add_subdirectory_ifdef(CONFIG_BT bluetooth)
+add_subdirectory_ifdef(CONFIG_NETWORKING net)
+add_subdirectory_ifdef(CONFIG_SHELL shell)
+```
+
+也有一些上层目录会无条件进入，再由下层继续筛选。例如 POSIX portability 目录中的：
+
+```cmake
+add_subdirectory_ifdef(CONFIG_POSIX_C_LIB_EXT c_lib_ext)
+```
+
+当前 QEMU 构建得到 `CONFIG_POSIX_C_LIB_EXT=y`，因此 `fnmatch.c`、`getentropy.c` 和 `getopt_shim.c` 参与编译，并形成 `libsubsys__portability__posix__c_lib_ext.a`。
+
+`lib/` 也使用相同的 Kconfig、CMake 和源码内条件编译机制，只是产物可能进入目录级 Zephyr library，也可能直接聚合进 `libzephyr.a`。
+
+### 6. 不同源码域的入口差异
+
+| 源码域 | 主要入口条件 | 需要额外注意的层次 |
+|---|---|---|
+| `kernel/`、`lib/`、`subsys/` | Kconfig + CMake | 共享文件内部可能继续使用 `#if CONFIG_*` |
+| `drivers/` | Kconfig + Devicetree + CMake | DTS 节点启用和驱动实例化 |
+| `boards/`、`soc/`、`arch/` | `west build -b <target>` 解析出的硬件目标 | board、revision、qualifier、SoC 和架构在普通源码筛选前已经确定 |
+| 外部 Zephyr module | west manifest 项目或显式 module 路径 + `zephyr/module.yml` + Kconfig/CMake | “仓库存在”不等于“功能已经编译” |
+| sysbuild image | sysbuild 的 image/domain 配置 | 每个 image 都有各自的 `.config`、CMake 构建和 ELF |
+| 生成代码 | Kconfig、Devicetree、syscall 或预链接 ELF | 由脚本生成，不一定对应一个手写 `.c` 文件 |
+
+它们的共同点是：最终都要落实为当前 image 的构建规则、编译单元和链接输入。差异只在于最前面的选择入口。
+
+### 7. 链接阶段还会继续裁剪
+
+Zephyr 通常为函数和数据启用独立 section，并在链接阶段使用 garbage collection。于是即使一个源文件已经被编译成对象文件，最终 ELF 仍可能只保留其中被引用或通过 linker section 明确保留的部分。
+
+静态库还多一层“按未解析符号提取对象”的规则。例如 `kernel/libkernel.a` 中的对象通常只有在满足链接引用关系后才被提取。检查 `zephyr.map` 时也要注意：出现在 map 中不一定代表内容被保留；位于 `Discarded input sections` 或地址为零的 section 可能已经被裁剪。
+
+## 如何确认当前构建了什么
+
+下面假设命令从 workspace 根目录执行，并把构建目录保存在变量中：
+
+```powershell
+$buildDir = "build-qemu-cortex-m3-hello-world"
+```
+
+### 1. 查看最终配置
+
+```powershell
+rg "^CONFIG_(MULTITHREADING|TIMESLICING|SERIAL|UART_STELLARIS)=" `
+  "$buildDir/zephyr/.config"
+```
+
+如果要反查某个配置的定义、默认值和依赖：
+
+```powershell
+rg "config UART_STELLARIS|select UART_STELLARIS|default UART_STELLARIS" `
+  zephyr/boards zephyr/soc zephyr/drivers zephyr/subsys zephyr/kernel
+```
+
+### 2. 列出实际参与编译的源文件
+
+`compile_commands.json` 是判断“某个源文件有没有调用编译器”的直接证据：
+
+```powershell
+$compileCommands = Get-Content -Raw "$buildDir/compile_commands.json" |
+  ConvertFrom-Json
+
+$compileCommands.file | Sort-Object -Unique
+```
+
+只看内核文件：
+
+```powershell
+$compileCommands.file |
+  Where-Object { $_ -match '[/\\]kernel[/\\]' } |
+  Sort-Object -Unique
+```
+
+只查一个具体驱动：
+
+```powershell
+$compileCommands.file |
+  Where-Object { $_ -match 'uart_stellaris\.c$' }
+```
+
+### 3. 查看构建目标和实际命令
+
+```powershell
+ninja -C $buildDir -t targets all
+ninja -C $buildDir -t commands
+```
+
+前者用于查看 CMake 最终生成的目标，后者用于查看 Ninja 会执行的完整编译、归档和链接命令。输出较多时可以用 `Select-String` 过滤：
+
+```powershell
+ninja -C $buildDir -t targets all |
+  Select-String 'libkernel|drivers__serial|zephyr\.elf'
+```
+
+### 4. 查看静态库和最终链接结果
+
+```powershell
+Select-String -Path "$buildDir/zephyr/zephyr.map" `
+  -Pattern 'libkernel','libdrivers__serial','uart_stellaris'
+```
+
+判定结果时按下面的证据强度区分：
+
+- `.config`：功能配置最终是否启用。
+- `CMakeLists.txt`：该配置如何映射到目录或源文件。
+- `compile_commands.json`：源文件是否实际参与编译。
+- `build.ninja` / `ninja -t commands`：对象如何归档和链接。
+- `zephyr.map`：对象和 section 如何参与最终链接，以及哪些内容被丢弃。
+- `zephyr.elf`：最终可执行镜像的事实结果。
+
+分析任意模块时，可以固定使用这条反查路径：
+
+```text
+.config
+  -> Kconfig 定义和依赖
+  -> 父目录及当前目录 CMakeLists.txt
+  -> compile_commands.json
+  -> 静态库和链接命令
+  -> zephyr.map / zephyr.elf
+```
+
 ## 如何阅读这条构建链
 
 如果你下次要重新定位构建问题，推荐按这个顺序读：
@@ -335,7 +601,7 @@ samples/hello_world/CMakeLists.txt
 ## 当前边界
 
 - 本文没有逐项展开 DTS 到 `Kconfig.dts` 的完整生成细节。
-- 本文没有逐项展开某个具体驱动或子系统在父目录中的纳入条件。
-- 本文没有覆盖 sysbuild、多镜像或签名脚本的更深层次分支。
+- 本文只用串口驱动和 POSIX portability 说明通用选择模式，没有穷举具体驱动或子系统。
+- 本文说明了 sysbuild image 会重复独立构建链，但没有展开多镜像装配、签名或 domain 依赖。
 
 这些都已经有入口，但还不是这份最小主链导图的范围。
